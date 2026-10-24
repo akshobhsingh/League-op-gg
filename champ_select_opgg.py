@@ -4,6 +4,7 @@ enemy players whose names the client shows.
 Uses only the local League Client (LCU) API and the Python standard library.
 Run:  python champ_select_opgg.py           (enemies only)
       python champ_select_opgg.py --allies  (also open teammates)
+      python champ_select_opgg.py --custom  (custom games: use the lobby's player list)
 """
 
 import argparse
@@ -96,9 +97,34 @@ def visible_riot_id(lcu, player):
     return None
 
 
+def custom_lobby_players(lcu, allies):
+    """In custom games champ select hides enemies, but the lobby lists both teams."""
+    config = (lcu.get("/lol-lobby/v2/lobby") or {}).get("gameConfig", {})
+    if not config.get("isCustom"):
+        return []
+    me = (lcu.get("/lol-summoner/v1/current-summoner") or {}).get("puuid")
+    team100 = config.get("customTeam100") or []
+    team200 = config.get("customTeam200") or []
+    if any(p.get("puuid") == me for p in team100):
+        mine, theirs = team100, team200
+    else:
+        mine, theirs = team200, team100
+    members = theirs + (mine if allies else [])
+    players = []
+    for member in members:
+        puuid = member.get("puuid")
+        if member.get("isBot") or not puuid or puuid == me:
+            continue
+        summoner = lcu.get(f"/lol-summoner/v2/summoners/puuid/{puuid}") or {}
+        players.append({"gameName": summoner.get("gameName"), "tagLine": summoner.get("tagLine")})
+    return players
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--allies", action="store_true", help="also open teammates' pages")
+    parser.add_argument("--custom", action="store_true",
+                        help="in custom games, read players from the custom lobby")
     args = parser.parse_args()
 
     lcu = None
@@ -132,6 +158,8 @@ def main():
                 if args.allies:
                     local_cell = session.get("localPlayerCellId")
                     players += [p for p in session.get("myTeam", []) if p.get("cellId") != local_cell]
+                if args.custom and session.get("isCustomGame"):
+                    players += custom_lobby_players(lcu, args.allies)
                 for player in players:
                     riot_id = visible_riot_id(lcu, player)
                     if riot_id and riot_id not in opened:
